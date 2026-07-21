@@ -132,19 +132,96 @@ export class CmsController {
         orderBy: { createdAt: 'desc' },
         skip: (p - 1) * PAGE_SIZE,
         take: PAGE_SIZE,
-        select: { id: true, email: true, name: true, role: true, disabled: true, createdAt: true },
+        // adminRoleId:后台角色的**当前指派**。列表不带它的话,前端的角色下拉框就只能是个
+        // 不知道当前值的空壳 —— 指派入口(POST /rbac/users/:userId/role)因此一直没法接。
+        select: { id: true, email: true, name: true, role: true, disabled: true, createdAt: true, adminRoleId: true },
       }),
       this.db.client.user.count({ where }),
     ])
     return { items: rows.map((u) => ({ ...u, createdAt: ms(u.createdAt) })), total, page: p, pageSize: PAGE_SIZE }
   }
 
+  /**
+   * 用户详情(点行打开的抽屉)—— 订阅历史 + 令牌与会话。
+   *
+   * **这里只给后端真有的两块**。设计稿抽屉里还有「设备」和「工具调用(近24H)」:
+   * 设备表存在但没有任何代码往里写(登录侧还没登记),工具调用 core 压根没有这张表 ——
+   * 都做成 UI 就又是"对着操作者撒谎"。等各自的链路打通了再加。
+   */
+  @Get('/users/:id/detail')
+  async userDetail(@Param('id') id: string) {
+    await this.guard('user.read')
+    const user = await this.db.client.user.findUnique({ where: { id } })
+    if (!user) throw new httpError.NotFoundError('用户不存在')
+
+    const [subs, counters, tokens, lastToken] = await Promise.all([
+      // 换套餐 = 开新订阅、旧的置 ended,所以历史是一串而不是一行 —— 按开始时间倒序就是时间线。
+      this.db.client.subscription.findMany({
+        where: { userId: id },
+        include: { plan: true },
+        orderBy: { periodStart: 'desc' },
+      }),
+      this.db.client.usageCounter.findMany({ where: { userId: id }, orderBy: { periodStart: 'desc' }, take: 12 }),
+      this.db.client.authToken.count({ where: { userId: id, revokedAt: null, expiresAt: { gt: new Date() } } }),
+      this.db.client.authToken.findFirst({ where: { userId: id }, orderBy: { createdAt: 'desc' } }),
+    ])
+
+    // 用量按周期对齐到订阅上:抽屉里「本周期已用 x / y」要的就是这个。
+    const usageAt = (start: Date): { used: number; limit: number } | null => {
+      const c = counters.find((x) => Math.abs(x.periodStart.getTime() - start.getTime()) < 36e5)
+      return c ? { used: c.usedTokens, limit: c.limitTokens } : null
+    }
+
+    return {
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, disabled: user.disabled, createdAt: ms(user.createdAt) },
+      subscriptions: subs.map((x) => ({
+        id: x.id,
+        planName: x.plan.name,
+        planCode: x.plan.code,
+        status: x.status,
+        periodStart: ms(x.periodStart),
+        periodEnd: ms(x.periodEnd),
+        monthlyTokens: x.plan.monthlyTokens,
+        usage: usageAt(x.periodStart),
+      })),
+      tokens: {
+        active: tokens,
+        lastLoginAt: lastToken ? ms(lastToken.createdAt) : null,
+        lastLoginIp: lastToken?.ip ?? null,
+      },
+    }
+  }
+
+  /**
+   * 吊销该用户全部令牌 —— 即时踢下线(access token 15 分钟内自然过期,refresh 立即失效)。
+   * 停用用户时也会自动调它:界面上写着"停用会即时吊销全部令牌并踢下线",那句话得是真的。
+   */
+  @Post('/users/:id/tokens/revoke')
+  async revokeUserTokens(@Param('id') id: string) {
+    const admin = await this.guard('user.manage')
+    const n = await this.revokeAllTokens(id)
+    await this.log(admin, 'user.tokens_revoke', { userId: id, revoked: n })
+    return { revoked: n }
+  }
+
+  /** 把该用户所有未吊销的令牌打上 revokedAt。**不删行** —— 审计要能对回来。 */
+  private async revokeAllTokens(userId: string): Promise<number> {
+    const r = await this.db.client.authToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    })
+    return r.count
+  }
+
   @Patch('/users/:id/disabled')
   async setUserDisabled(@Param('id') id: string, @Body('disabled') disabled: boolean) {
     const admin = await this.guard('user.manage')
     const u = await this.db.client.user.update({ where: { id }, data: { disabled } })
-    await this.log(admin, disabled ? 'user.disable' : 'user.enable', { userId: id, email: u.email })
-    return { id, disabled }
+    // **停用必须同时吊销令牌**,否则"停用"只挡住下次登录 —— 他当前那台机器照样跑,
+    // 而你在后台看到的是"已停用",以为人已经下线了。这正是界面承诺的那句话。
+    const revoked = disabled ? await this.revokeAllTokens(id) : 0
+    await this.log(admin, disabled ? 'user.disable' : 'user.enable', { userId: id, email: u.email, revokedTokens: revoked })
+    return { id, disabled, revokedTokens: revoked }
   }
 
   @Patch('/users/:id/role')

@@ -24,6 +24,7 @@ export { ToolPolicyPermission } from './business/app/toolpolicy/permission.provi
 export { UsageService } from './business/app/usage/usage.service.js'
 export { AuthService } from './business/app/auth/auth.service.js'
 export { AuthController } from './business/app/auth/auth.controller.js'
+export { RegistrationGate } from './business/app/registration/registration.service.js'
 export { AccountController } from './business/app/account/account.controller.js'
 export { GestureController } from './business/app/gesture/gesture.controller.js'
 export { GuardController } from './business/app/guard/guard.controller.js'

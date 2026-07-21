@@ -40,19 +40,30 @@ export class AuthService implements IAuthService {
     })
   }
 
-  private async issue(userId: string): Promise<AuthTokens> {
+  private async issue(userId: string, origin?: { ip?: string | null; userAgent?: string | null }): Promise<AuthTokens> {
     const refreshToken = randomBytes(32).toString('base64url')
     await this.db.client.authToken.create({
-      data: { userId, kind: 'refresh', tokenHash: sha256(refreshToken), expiresAt: new Date(Date.now() + REFRESH_TTL_MS) },
+      data: {
+        userId,
+        kind: 'refresh',
+        tokenHash: sha256(refreshToken),
+        expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+        ip: origin?.ip ?? null,
+        userAgent: origin?.userAgent?.slice(0, 200) ?? null,
+      },
     })
     return { accessToken: this.signAccess(userId), refreshToken, userId }
   }
 
-  async login(email: string, password: string): Promise<AuthTokens> {
+  async login(
+    email: string,
+    password: string,
+    origin?: { ip?: string | null; userAgent?: string | null },
+  ): Promise<AuthTokens> {
     const user = await this.db.client.user.findUnique({ where: { email } })
     if (!user || user.disabled || !user.password) throw new Error('登录失败')
     if (!(await bcrypt.compare(password, user.password))) throw new Error('登录失败')
-    return this.issue(user.id)
+    return this.issue(user.id, origin)
   }
 
   async refresh(refreshToken: string): Promise<{ accessToken: string }> {

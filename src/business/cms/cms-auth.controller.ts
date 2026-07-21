@@ -22,7 +22,10 @@ export class CmsAuthController {
 
   @Post('/login')
   async login(@Body('email') email: string, @Body('password') password: string) {
-    const tokens = await this.auth.login(email, password)
+    const tokens = await this.auth.login(email, password, {
+      ip: this.ctx.ip || null,
+      userAgent: this.ctx.get('user-agent') || null,
+    })
     const user = await this.db.client.user.findUnique({ where: { id: tokens.userId }, include: { adminRole: true } })
     // 能进后台的两类人:超管,或被指派了后台角色的受托管理员。
     if (!user || (user.role !== 'admin' && !user.adminRoleId)) {

@@ -2,6 +2,7 @@ import { Body, Controller, Get, httpError, Inject, Post } from '@midwayjs/core'
 import { Context } from '@midwayjs/koa'
 import { PRISMA, PrismaService } from '../../../database/prisma.service.js'
 import { ACCESS_TTL_SECONDS, AUTH_SERVICE, type AuthTokens, type IAuthService } from './auth.contract.js'
+import { REGISTRATION_GATE, type IRegistrationGate } from '../registration/registration.contract.js'
 
 /** 客户端期望的用户形状(createdAt 为 epoch ms;avatarUrl 暂无,给 null)。 */
 export function toUser(u: { id: string; email: string; name: string | null; role: string; createdAt: Date }) {
@@ -12,6 +13,7 @@ export function toUser(u: { id: string; email: string; name: string | null; role
 export class AuthController {
   @Inject() ctx!: Context
   @Inject(AUTH_SERVICE) private readonly auth!: IAuthService
+  @Inject(REGISTRATION_GATE) private readonly gate!: IRegistrationGate
   @Inject(PRISMA) private readonly db!: PrismaService
 
   private async session(tokens: AuthTokens) {
@@ -19,9 +21,28 @@ export class AuthController {
     return { user: toUser(user!), accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, expiresIn: ACCESS_TTL_SECONDS }
   }
 
+  /** 请求来源(IP / UA)—— 签发令牌时一起记下,后台「最近一次登录」和异地排查都靠它。 */
+  private origin(): { ip: string | null; userAgent: string | null } {
+    return { ip: this.ctx.ip || null, userAgent: this.ctx.get('user-agent') || null }
+  }
+
   @Post('/register')
   async register(@Body() b: { email: string; password: string; name?: string; deviceLabel?: string; inviteCode?: string }) {
-    const tokens = await this.auth.register(b.email, b.password, b.name)
+    /**
+     * **准入闸门,必须在建号之前**(后台「注册管控」的 open/invite/closed 就是在这生效的)。
+     * 和下面那段"注册来源补写"刚好相反:来源是事后记账,记不上不该挡住注册;
+     * 闸门漏一次就等于没有 —— 所以它不进 try,抛出去直接 4xx 给注册页。
+     */
+    const ticket = await this.gate.admit(b.inviteCode)
+
+    let tokens: AuthTokens
+    try {
+      tokens = await this.auth.register(b.email, b.password, b.name)
+    } catch (e) {
+      // 建号失败(邮箱重复之类)要把预占的邀请码名额还回去,否则试错几次就把码耗光了。
+      await ticket.release()
+      throw e
+    }
     /**
      * 记下**注册来源**(IP / 设备 / 邀请码)——「注册管控」页判"同 IP 批量注册"就靠它。
      * 注册成功后补写,不塞进 auth.register 的签名:那是认证的活,来源画像是运营的活,别搅在一起。
@@ -33,7 +54,9 @@ export class AuthController {
         data: {
           signupIp: this.ctx.ip || null,
           signupDevice: typeof b.deviceLabel === 'string' ? b.deviceLabel.slice(0, 120) : null,
-          inviteCode: typeof b.inviteCode === 'string' && b.inviteCode.trim() ? b.inviteCode.trim() : null,
+          // 记**闸门实际认下的那个码**,不是用户填了什么就记什么:
+          // open 模式下随手填的字符串不该混进来冒充邀请来源。
+          inviteCode: ticket.inviteCode,
         },
       })
     } catch (e) {
@@ -44,7 +67,7 @@ export class AuthController {
 
   @Post('/login')
   async login(@Body() b: { email: string; password: string }) {
-    return this.session(await this.auth.login(b.email, b.password))
+    return this.session(await this.auth.login(b.email, b.password, this.origin()))
   }
 
   @Post('/refresh')

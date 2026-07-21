@@ -1,17 +1,17 @@
 import { Body, Controller, Del, Get, httpError, Inject, Param, Patch, Post, Query } from '@midwayjs/core'
 import { Context } from '@midwayjs/koa'
+import { randomBytes } from 'node:crypto'
 import { PRISMA, PrismaService } from '../../database/prisma.service.js'
 import { AUTH_SERVICE, type IAuthService } from '../app/auth/auth.contract.js'
 import { AUDIT_SERVICE, type IAuditService } from './audit.service.js'
 import { PERMISSIONS, parsePermissions, sanitizePermissionKeys } from './permissions.js'
 import { requirePermission } from './access.js'
+// 注册模式的键名/取值**以 app 域的契约为准** —— 这边抄一份字符串的话,
+// 哪天改了名就会变成「后台点了没反应,还查不出为什么」。
+import { REG_MODES, REG_MODE_KEY, isRegMode, type RegMode } from '../app/registration/registration.contract.js'
 
 const PAGE_SIZE = 20
 const ms = (d: Date | null): number | null => (d ? d.getTime() : null)
-
-const REG_MODE_KEY = 'registration.mode'
-const REG_MODES = ['open', 'invite', 'closed'] as const
-type RegMode = (typeof REG_MODES)[number]
 
 const BUILD_STATUSES = ['pending', 'allowed', 'blocked'] as const
 
@@ -181,8 +181,7 @@ export class CmsSecurityController {
 
   private async regMode(): Promise<RegMode> {
     const row = await this.db.client.systemSetting.findUnique({ where: { key: REG_MODE_KEY } })
-    const v = row?.value as RegMode | undefined
-    return v && REG_MODES.includes(v) ? v : 'open'
+    return isRegMode(row?.value) ? row.value : 'open'
   }
 
   @Get('/registration')
@@ -242,7 +241,7 @@ export class CmsSecurityController {
   @Patch('/registration/mode')
   async setRegMode(@Body('mode') mode: string) {
     const admin = await this.guard('user.manage')
-    if (!REG_MODES.includes(mode as RegMode)) {
+    if (!isRegMode(mode)) {
       throw new httpError.BadRequestError(`未知模式:${mode}(只能是 ${REG_MODES.join(' / ')})`)
     }
     await this.db.client.systemSetting.upsert({
@@ -253,4 +252,106 @@ export class CmsSecurityController {
     await this.audit.record({ userId: admin.id, userEmail: admin.email, ip: this.ip, action: 'registration.mode', detail: { mode } })
     return { mode }
   }
+
+  // ── 邀请码(invite 模式的凭据)──────────────────────────
+
+  @Get('/registration/invites')
+  async invites() {
+    await this.guard('user.read')
+    const rows = await this.db.client.inviteCode.findMany({ orderBy: { createdAt: 'desc' } })
+    return { invites: rows.map(toInvite) }
+  }
+
+  @Post('/registration/invites')
+  async createInvite(@Body() b: { code?: string; note?: string | null; maxUses?: number; expiresAt?: number | null }) {
+    const admin = await this.guard('user.manage')
+    // 不填就随机生成 —— 让人自己想码,想出来的多半是 test123 这种能被猜到的。
+    const code = (b?.code ?? '').trim().toUpperCase() || randomCode()
+    if (code.length < 4) throw new httpError.BadRequestError('邀请码至少 4 位')
+    if (await this.db.client.inviteCode.findUnique({ where: { code } })) {
+      throw new httpError.BadRequestError(`邀请码「${code}」已存在`)
+    }
+    const maxUses = Math.max(1, Math.floor(Number(b?.maxUses ?? 1)) || 1)
+    const expiresAt = b?.expiresAt ? new Date(b.expiresAt) : null
+    if (expiresAt && Number.isNaN(expiresAt.getTime())) throw new httpError.BadRequestError('过期时间不合法')
+
+    const r = await this.db.client.inviteCode.create({
+      data: { code, note: b?.note ?? null, maxUses, expiresAt, createdBy: admin.id },
+    })
+    await this.audit.record({ userId: admin.id, userEmail: admin.email, ip: this.ip, action: 'invite.create', detail: { code, maxUses, expiresAt: b?.expiresAt ?? null } })
+    return toInvite(r)
+  }
+
+  @Patch('/registration/invites/:id')
+  async updateInvite(@Param('id') id: string, @Body() b: { note?: string | null; maxUses?: number; expiresAt?: number | null; active?: boolean }) {
+    const admin = await this.guard('user.manage')
+    const cur = await this.db.client.inviteCode.findUnique({ where: { id } })
+    if (!cur) throw new httpError.NotFoundError('邀请码不存在')
+
+    const data: Record<string, unknown> = {}
+    if (b?.note !== undefined) data.note = b.note
+    if (typeof b?.active === 'boolean') data.active = b.active
+    if (b?.maxUses !== undefined) {
+      const n = Math.floor(Number(b.maxUses))
+      if (!Number.isFinite(n) || n < 1) throw new httpError.BadRequestError('名额至少 1')
+      // 名额可以往上加,但**不能调到已用数以下** —— 那会让 usedCount > maxUses,
+      // 界面上显示「5/3 已用」,谁看都以为是 bug。要收口就停用。
+      if (n < cur.usedCount) throw new httpError.BadRequestError(`已经用掉 ${cur.usedCount} 个,名额不能低于这个数(要收口请直接停用)`)
+      data.maxUses = n
+    }
+    if (b?.expiresAt !== undefined) {
+      const d = b.expiresAt ? new Date(b.expiresAt) : null
+      if (d && Number.isNaN(d.getTime())) throw new httpError.BadRequestError('过期时间不合法')
+      data.expiresAt = d
+    }
+
+    const r = await this.db.client.inviteCode.update({ where: { id }, data })
+    await this.audit.record({ userId: admin.id, userEmail: admin.email, ip: this.ip, action: 'invite.update', detail: { id, code: r.code, ...data } })
+    return toInvite(r)
+  }
+
+  @Del('/registration/invites/:id')
+  async deleteInvite(@Param('id') id: string) {
+    const admin = await this.guard('user.manage')
+    const r = await this.db.client.inviteCode.findUnique({ where: { id } })
+    if (!r) throw new httpError.NotFoundError('邀请码不存在')
+    // 用过的码不给删:user.inviteCode 里存的是码本身,删了这行就再也回答不了
+    // 「这批人是从哪个渠道来的」。停用即可,历史要留着。
+    if (r.usedCount > 0) throw new httpError.BadRequestError(`已经有 ${r.usedCount} 人用过,不能删除(停用即可,来源要留痕)`)
+    await this.db.client.inviteCode.delete({ where: { id } })
+    await this.audit.record({ userId: admin.id, userEmail: admin.email, ip: this.ip, action: 'invite.delete', detail: { id, code: r.code } })
+    return { deleted: true }
+  }
+}
+
+type InviteRow = {
+  id: string
+  code: string
+  note: string | null
+  maxUses: number
+  usedCount: number
+  expiresAt: Date | null
+  active: boolean
+  createdAt: Date
+}
+
+const toInvite = (r: InviteRow) => ({
+  id: r.id,
+  code: r.code,
+  note: r.note,
+  maxUses: r.maxUses,
+  usedCount: r.usedCount,
+  expiresAt: ms(r.expiresAt),
+  active: r.active,
+  createdAt: ms(r.createdAt),
+})
+
+/**
+ * 随机邀请码。去掉 0/O/1/I/L —— 邀请码是要**念给人听、抄进输入框**的,
+ * 这几个字符在任何字体下都能让人抄错,然后你收到一句"你给的码是错的"。
+ */
+function randomCode(): string {
+  const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+  const bytes = randomBytes(8)
+  return [...bytes].map((b) => ALPHABET[b % ALPHABET.length]).join('')
 }

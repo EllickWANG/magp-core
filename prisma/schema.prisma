@@ -81,6 +81,10 @@ model AuthToken {
   revokedAt  DateTime?
   lastUsedAt DateTime?
   createdAt  DateTime  @default(now())
+  /// 签发时的来源。后台「最近一次登录 · IP」靠它;异地登录排查也只能靠它。
+  /// 只记签发那一刻,不逐次刷新 —— 那会变成位置追踪,超出"安全审计"该有的范围。
+  ip         String?
+  userAgent  String?
 
   @@index([userId, kind])
   @@map("auth_tokens")
@@ -294,6 +298,36 @@ model AuditLog {
   @@index([createdAt])
   @@index([action, createdAt])
   @@map("audit_logs")
+}
+
+/// 邀请码 —— registration.mode = 'invite' 时注册的**唯一凭据**。
+///
+/// 为什么单独建表而不是塞进 SystemSetting 的一个 JSON:码要计次、要过期、要能事后回答
+/// 「这批人是从哪个渠道进来的」。这三件事都需要按行更新和按行查询,JSON blob 做不到 ——
+/// 尤其计次:并发注册时两个人同时抢最后一个名额,只有行级的条件更新挡得住。
+///
+/// 用 maxUses 而不是「一次性」:一个码发给一个班 / 一个渠道是常态,一人一码反而是特例(maxUses=1)。
+model InviteCode {
+  id   String @id @default(uuid())
+  code String @unique
+
+  /// 这个码发给谁 / 哪个渠道 —— 事后追转化率全靠它,不是给人写着玩的
+  note String?
+
+  /// 名额与已用。usedCount 只增不减,靠 active/expiresAt 停用,**不靠把计数改回去**
+  maxUses   Int @default(1)
+  usedCount Int @default(0)
+
+  /// null = 不过期
+  expiresAt DateTime?
+  active    Boolean   @default(true)
+
+  /// 建码的管理员 userId。**不做外键**:管理员销号了,码的来路也不该跟着消失
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@index([active])
+  @@map("invite_codes")
 }
 
 /// 系统设置(键值)。注册模式这类**寥寥几个全局开关**存这儿,不值得为一个字段建一张表。
