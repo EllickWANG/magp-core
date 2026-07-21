@@ -4,8 +4,8 @@
 # 两个容易踩的点,先说清楚:
 #  1. **Prisma 客户端生成到 `prisma/generated/client`**(schema 里自定义了 output),不在 node_modules。
 #     所以必须在镜像里跑 `prisma generate`,并把这份产物带进运行阶段 —— 只装依赖是起不来的。
-#  2. **SQLite 是单文件,写在容器里就等于每次重建都清库**。默认已指向 `/data`(见 DATABASE_URL),
-#     记得挂卷:`-v magp-data:/data`。不挂的话数据随容器一起消失。
+#  2. **库是外部 PostgreSQL**,容器本身无状态 —— 不需要挂卷,横向扩也不用改。
+#     DATABASE_URL 走 .env(已打入镜像);换环境时用 `-e DATABASE_URL=...` 覆盖即可。
 
 # ── 构建阶段 ───────────────────────────────────────────────
 FROM node:22-slim AS builder
@@ -47,9 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-cert
  && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
-    PORT=7001 \
-    # 库落在卷里,不落在镜像层 —— 否则重建镜像 = 清库。
-    DATABASE_URL="file:/data/magp.db"
+    PORT=7001
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
@@ -63,14 +61,13 @@ COPY --from=builder /app/.env ./.env
 # 运行时用的 prisma CLI(builder 里 prune 掉了 devDeps,这里单独装一份精简的)
 RUN npm i -g prisma@6 --no-audit --no-fund
 
-RUN mkdir -p /data
-VOLUME ["/data"]
 EXPOSE 7001
 
 # 非 root 运行;/data 要给它写权限,否则 SQLite 开不了库。
-RUN useradd -m -u 10001 magp && chown -R magp:magp /app /data
+RUN useradd -m -u 10001 magp && chown -R magp:magp /app
 USER magp
 
 # `db push` 是幂等的:表已存在就什么都不做,新增字段会补上 —— 适合这种无 migration 目录的项目。
+# 注意:多副本同时启动会并发 push;PG 侧是事务安全的,但生产上更稳妥的做法是单独跑一次迁移再滚服务。
 # 建完表再启动;seed(默认管理员 / Free 套餐 / 内置角色)由 core 自己在 onReady 里跑。
 ENTRYPOINT ["/bin/sh", "-c", "prisma db push --schema=prisma/schema.prisma --skip-generate && exec node --env-file-if-exists=.env bootstrap.js"]

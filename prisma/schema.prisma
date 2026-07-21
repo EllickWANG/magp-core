@@ -1,5 +1,8 @@
-// Magp core 业务库 —— Prisma + SQLite。core 是唯一访问方。
-// 重新设计(旧 control-plane schema 仅作参考)。JSON 一律 String 存;无 enum、无标量数组(sqlite 友好)。
+// Magp core 业务库 —— Prisma + PostgreSQL。core 是唯一访问方。
+// 重新设计(旧 control-plane schema 仅作参考)。
+// 注:JSON 一律 String 存、无 enum、无标量数组 —— 这些约束是当初为 sqlite 定的,
+// 迁到 PG 后依然保留:它们让 schema 在两种库之间可移植,且 JSON-as-String 省掉了
+// 「库里存 jsonb 但代码仍按字符串读」这类两头不一致的隐患。要用 PG 原生类型再单独改。
 // 设计不变量:UsageEvent.requestId 唯一(幂等挡重复扣费);UsageCounter (userId,periodStart) 唯一 + 原子扣减;
 // AuthToken.tokenHash 唯一(sha256,吊销打 revokedAt 不删行);Provider.apiKeyEnc 信封加密。
 
@@ -9,7 +12,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
