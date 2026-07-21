@@ -1,0 +1,34 @@
+# Magp core 单进程服务:HTTP + WebSocket 共用一个端口。
+#
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 数据在具名卷 magp-data 里。**别删这个卷** —— 用户、订阅、用量、审计、服务商配置全在里面。
+services:
+  core:
+    build: .
+    image: magp-core:latest
+    container_name: magp-core
+    restart: unless-stopped
+    ports:
+      - '7001:7001'
+    volumes:
+      # SQLite 库。容器重建不丢数据靠的就是它。
+      - magp-data:/data
+    environment:
+      # 这几个也写在镜像内的 .env 里;在这里给一份是为了**能就地覆盖**
+      # (比如临时换端口、或部署到另一套环境时换密钥),不用重新构建镜像。
+      NODE_ENV: production
+      PORT: '7001'
+      DATABASE_URL: 'file:/data/magp.db'
+    healthcheck:
+      # 未登录时 /api/auth/me 回 401 —— 这正说明进程活着且路由已挂载。
+      # 用 200 当健康标准反而要塞一个真 token 进来,得不偿失。
+      test: ['CMD-SHELL', 'node -e "fetch(\"http://127.0.0.1:${PORT:-7001}/api/auth/me\").then(r=>process.exit(r.status?0:1)).catch(()=>process.exit(1))"']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  magp-data:

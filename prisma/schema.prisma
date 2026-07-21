@@ -1,0 +1,303 @@
+// Magp core 业务库 —— Prisma + SQLite。core 是唯一访问方。
+// 重新设计(旧 control-plane schema 仅作参考)。JSON 一律 String 存;无 enum、无标量数组(sqlite 友好)。
+// 设计不变量:UsageEvent.requestId 唯一(幂等挡重复扣费);UsageCounter (userId,periodStart) 唯一 + 原子扣减;
+// AuthToken.tokenHash 唯一(sha256,吊销打 revokedAt 不删行);Provider.apiKeyEnc 信封加密。
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── 身份 / 认证 ─────────────────────────────────────────────
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  password  String? // bcrypt;三方登录可空
+  phone     String?   @unique
+  name      String?
+  role      String    @default("user") // user | admin(粗粒度闸);细粒度看 adminRole
+  disabled  Boolean   @default(false)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime? @updatedAt
+
+  /// 细粒度后台角色(null = 不是后台管理员 / 只按 role 粗判)
+  adminRoleId String?
+  adminRole   AdminRole? @relation(fields: [adminRoleId], references: [id], onDelete: SetNull)
+
+  /// 注册来源 —— 注册管控页要据此判"同 IP 批量注册"这类可疑信号
+  signupIp     String?
+  signupDevice String?
+  inviteCode   String?
+
+  devices       Device[]
+  auditLogs     AuditLog[]
+  tokens        AuthToken[]
+  subscriptions Subscription[]
+  usageEvents   UsageEvent[]
+  usageCounters UsageCounter[]
+  toolPolicies  ToolPolicy[]
+  agentSessions AgentSession[]
+
+  @@index([disabled])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model Device {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  installId  String    @unique
+  name       String?
+  platform   String?
+  appVersion String?
+  lastSeenAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  tokens AuthToken[]
+
+  @@index([userId, revokedAt])
+  @@map("devices")
+}
+
+model AuthToken {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       String    @default("refresh")
+  tokenHash  String    @unique // sha256,库里无明文
+  deviceId   String?
+  device     Device?   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, kind])
+  @@map("auth_tokens")
+}
+
+// ── 套餐 / 计费 / 配额 ───────────────────────────────────────
+model Plan {
+  id                    String   @id @default(uuid())
+  code                  String   @unique
+  name                  String
+  priceCents            Int      @default(0)
+  currency              String   @default("CNY")
+  monthlyTokens         Int
+  maxDevices            Int      @default(1)
+  maxConcurrentSessions Int      @default(1)
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+
+  subscriptions Subscription[]
+  toolPolicies  ToolPolicy[]
+
+  @@map("plans")
+}
+
+model Subscription {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId      String
+  plan        Plan     @relation(fields: [planId], references: [id])
+  status      String   @default("active") // active | past_due | canceled | expired
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([userId, status])
+  @@map("subscriptions")
+}
+
+/// 每次模型/能力调用一行,只追加。requestId 幂等挡重复扣费。
+model UsageEvent {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestId    String    @unique
+  provider     String
+  model        String
+  capability   String    @default("llm") // llm | vision | image | video
+  inputTokens  Int       @default(0)
+  outputTokens Int       @default(0)
+  totalTokens  Int       @default(0)
+  status       String    @default("settled") // settled | reserved | voided
+  createdAt    DateTime  @default(now())
+  settledAt    DateTime?
+
+  @@index([userId, createdAt])
+  @@map("usage_events")
+}
+
+/// 配额计数器(用户 × 周期)。扣减必须原子条件更新(updateMany + increment)。
+model UsageCounter {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  periodStart DateTime
+  periodEnd   DateTime
+  usedTokens  Int       @default(0)
+  limitTokens Int       @default(0)
+  updatedAt   DateTime?
+
+  @@unique([userId, periodStart])
+  @@map("usage_counters")
+}
+
+// ── 工具策略 ────────────────────────────────────────────────
+/// 解析顺序 user > plan > global,同层 priority 大者先,首条命中生效。
+model ToolPolicy {
+  id          String   @id @default(uuid())
+  scope       String // global | plan | user
+  planId      String?
+  plan        Plan?    @relation(fields: [planId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  toolPattern String // Bash / browser_* / mcp__magp__*
+  effect      String // allow | ask | deny
+  priority    Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([scope, active])
+  @@map("tool_policies")
+}
+
+// ── 服务商(模型路由)─────────────────────────────────────────
+/// 铁律:API 永不返回 apiKeyEnc。
+model Provider {
+  id           String    @id @default(uuid())
+  code         String    @unique
+  name         String
+  kind         String    @default("openai") // anthropic | openai
+  baseUrl      String
+  apiFormat    String    @default("openai_chat")
+  models       String    @default("{}") // JSON:{ main, vision, image, video }
+  capabilities String    @default("[]") // JSON 数组:["llm","vision",...]
+  apiKeyEnc    String // AES-256-GCM 信封加密
+  weight       Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime? @updatedAt
+
+  assignments ProviderAssignment[]
+
+  @@map("providers")
+}
+
+/// 能力指派:capability 主键,一能力最多一条。
+model ProviderAssignment {
+  capability String    @id // llm | vision | image | video | grounding
+  providerId String
+  provider   Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  updatedAt  DateTime?
+
+  @@map("provider_assignments")
+}
+
+// ── 会话 / 转录 / WS 票据 ────────────────────────────────────
+model AgentSession {
+  sessionId      String    @id
+  ownerUserId    String
+  owner          User      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  status         String    @default("active")
+  permissionMode String?
+  title          String?
+  lastActiveAt   DateTime?
+  createdAt      DateTime  @default(now())
+
+  events SessionEvent[]
+
+  @@index([ownerUserId, status])
+  @@index([ownerUserId, createdAt])
+  @@map("agent_sessions")
+}
+
+/// (sessionId, seq) 主键即幂等键;会话删除靠外键级联。
+model SessionEvent {
+  sessionId String
+  seq       Int
+  line      String
+  createdAt DateTime     @default(now())
+  session   AgentSession @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  @@id([sessionId, seq])
+  @@map("session_events")
+}
+
+/// WS 一次性票据。消费 = DELETE(天然一次性)。
+model WsTicket {
+  ticketHash String   @id
+  sessionId  String
+  userId     String
+  expiresAt  DateTime
+
+  @@index([expiresAt])
+  @@map("ws_tickets")
+}
+
+/// 后台角色(细粒度 RBAC)。**权限点清单在代码里声明**(business/cms/permissions.ts)——
+/// 代码是真相源,库里只存"这个角色勾了哪几个 key"的投影。
+/// sqlite 没有标量数组,所以 permissions 存 JSON 串(与本 schema 其余 JSON 字段一致)。
+model AdminRole {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  isSystem    Boolean   @default(false) // 内置角色不可删
+  permissions String    @default("[]") // JSON: string[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime? @updatedAt
+
+  users User[]
+
+  @@map("admin_roles")
+}
+
+/// 客户端构建指纹(app.asar sha256)。**软闸**:库里存在任一 allowed 行才开始强制,
+/// 否则一律放行 —— 免得第一次部署就把所有人挡在门外。
+model ClientBuild {
+  id          String    @id @default(uuid())
+  sha256      String    @unique
+  version     String?
+  platform    String?
+  arch        String?
+  status      String    @default("pending") // pending | allowed | blocked
+  loginCount  Int       @default(0)
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime?
+
+  @@index([status])
+  @@map("client_builds")
+}
+
+/// 后台审计。**只增不改不删** —— 审计能被改就不叫审计了。
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  userEmail String? // 冗余一份:用户被删了,这条审计仍要说得清是谁干的
+  action    String
+  detail    String? // JSON 串
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}
+
+/// 系统设置(键值)。注册模式这类**寥寥几个全局开关**存这儿,不值得为一个字段建一张表。
+model SystemSetting {
+  key       String    @id
+  value     String
+  updatedAt DateTime? @updatedAt
+
+  @@map("system_settings")
+}

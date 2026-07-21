@@ -1,38 +1,55 @@
-### 3 分钟了解如何进入开发
+# Magp Core Backend
 
-欢迎使用云效代码管理 Codeup，通过阅读以下内容，你可以快速熟悉 Codeup ，并立即开始今天的工作。
+全新后端(Midway v4 / Node,**单进程**),取代旧 Bun `agent-runtime`。
+业务与 agent **用文件夹分区**;agent 内部四个可换点用 **Midway 模块 + 接口 token + DI** 解耦。
+设计详见 `../server/docs/agent-framework-design.md`。
 
-### 提交**文件**
+## 结构
 
-Codeup 支持两种方式进行代码提交：网页端提交，以及本地 Git 客户端提交。
+```
+src/
+  business/
+    app/                     # 业务·app 端(迁移搬入)
+    cms/                     # 业务·cms 端(迁移搬入)
+    common/
+      session-events.ts      # 通用转录存储(业务与 agent 共用)
+      agent/                 # ★ agent(公共能力,不依赖具体业务)
+        domain/              #   纯类型:Message / AgentEvent / ToolCall
+        engine/              #   引擎:turn/session 纯逻辑 + AgentEngine(@Provide,只 @Inject 接口)
+        model/               #   解耦① 模型/provider   —— MODEL_PROVIDER
+        tools/               #   解耦② 工具/能力        —— TOOL_REGISTRY / CAPABILITY
+        protocol/            #   解耦③ 客户端协议       —— CLIENT_PROTOCOL
+        persistence/         #   解耦④ 持久化/会话      —— TRANSCRIPT_STORE
+        permission/          #   工具权限门            —— PERMISSION
+        session/             #   会话生命周期 + WS 通道 —— CLIENT_CHANNEL + AgentSessionManager
+  config/  configuration.ts
+```
 
-* 如需体验本地命令行操作，请先安装 Git 工具，安装方法参见[安装Git](https://help.aliyun.com/document_detail/153800.html)。
+## 边界(两层)
 
-* 如需体验 SSH 方式克隆和提交代码，请先在平台账号内配置 SSH 公钥，配置方法参见[配置 SSH 密钥](https://help.aliyun.com/document_detail/153709.html)。
+1. **业务 vs agent**:靠文件夹。`business/common/agent` **不许**依赖 `business/app|cms`(CI 强制)。
+2. **agent 内部四个可换点**:靠 **接口 token + DI**。`engine` 只 `@Inject` 各 `*.contract` 的 token,
+   **不许** import 兄弟模块的实现文件(CI 强制)。换实现 = 换绑 token 的类,engine 一行不动。
 
-* 如需体验 HTTP 方式克隆和提交代码，请先在平台账号内配置克隆账密，配置方法参见[配置 HTTPS 克隆账号密码](https://help.aliyun.com/document_detail/153710.html)。
+> 纯循环逻辑(`engine/turn.ts` `session.ts`)不依赖 Midway,可脱离容器单测(见 `engine/turn.test.ts`)。
 
-现在，你可以在 Codeup 中提交代码文件了，跟着文档「[__提交第一行代码__](https://help.aliyun.com/document_detail/153707.html?spm=a2c4g.153710.0.0.3c213774PFSMIV#6a5dbb1063ai5)」一起操作试试看吧。
+## 命令
 
-<img src="https://img.alicdn.com/imgextra/i3/O1CN013zHrNR1oXgGu8ccvY_!!6000000005235-0-tps-2866-1268.jpg" width="100%" />
+```bash
+pnpm install
+pnpm test               # 引擎纯逻辑单测(无网络/无 DB/无 Midway)
+pnpm typecheck
+pnpm lint:boundaries    # 文件夹 + 接口 边界红线
+pnpm dev                # 起 Midway(需填 LLM_API_KEY 等 env)
+```
 
+## 待办(填空点)
 
-### 进行代码检测
-
-开发过程中，为了更好的维护你的代码质量，你可以开启 Codeup 内置开箱即用的「[代码检测服务](https://help.aliyun.com/document_detail/434321.html)」，开启后提交或合并请求的变更将自动触发检测，识别代码编写规范和安全漏洞问题，并及时提供结果报表和修复建议。
-
-<img src="https://img.alicdn.com/imgextra/i2/O1CN01BRzI1I1IO0CR2i4Aw_!!6000000000882-0-tps-2862-1362.jpg" width="100%" />
-
-### 开展代码评审
-
-功能开发完毕后，通常你需要发起「[代码评审并执行合并](https://help.aliyun.com/document_detail/153872.html)」，Codeup 支持多人协作的代码评审服务，你可以通过「[保护分支设置合并规则](https://help.aliyun.com/document_detail/153873.html?spm=a2c4g.203108.0.0.430765d1l9tTRR#p-4on-aep-l5q)」策略及「[__合并请求设置__](https://help.aliyun.com/document_detail/153874.html?spm=a2c4g.153871.0.0.3d38686cJpcdJI)」对合并过程进行流程化管控，同时提供在线代码评审及冲突解决能力，让评审过程更加流畅。
-
-<img src="https://img.alicdn.com/imgextra/i1/O1CN01MaBDFH1WWcGnQqMHy_!!6000000002796-0-tps-2592-1336.jpg" width="100%" />
-
-### 成员协作
-
-是时候邀请成员一起编写卓越的代码工程了，请点击左下角「成员」邀请你的小伙伴开始协作吧！
-
-### 更多
-
-Git 使用教学、高级功能指引等更多说明，参见[Codeup帮助文档](https://help.aliyun.com/document_detail/153402.html)。
+- [ ] ProtocolCodec:盘现有客户端 stream-json 帧,写黄金契约测试(落地前必做)
+- [ ] persistence:`session-events.ts` 接 Prisma/PG;load 读时物化
+- [ ] permission:接 `business/app/toolpolicy` RBAC
+- [ ] capability:接 `business/app/capability` 能力服务(in-process + 记账)
+- [ ] channel:接 session-socket WS hub(+ 应答关联)
+- [ ] model provider:从 CMS 投影按会话动态取
+- [ ] 迁移:把旧 control-plane 的 app/cms 业务搬进 `business/`,接管 `/ws`、`/api/sessions*`,删旧 `server/apps/agent-runtime`
+```

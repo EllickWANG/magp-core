@@ -1,0 +1,21 @@
+# 构建上下文越小越快;更要紧的是**别把本机的库和产物带进镜像**。
+node_modules
+dist
+out
+.git
+.github
+.aliyun
+
+# 本机 SQLite 库:里面是真实用户/审计/加密后的服务商密钥。
+# 镜像里的库必须来自挂载卷,不能从开发机烤进去。
+prisma/*.db
+prisma/*.db-journal
+prisma/*.db-wal
+prisma/*.db-shm
+# Prisma 客户端在镜像内重新 generate(本机产物是 macOS 引擎,拷进 Linux 镜像用不了)
+prisma/generated
+
+*.log
+.DS_Store
+.vscode
+.idea

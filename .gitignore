@@ -69,7 +69,10 @@ web_modules/
 .yarn-integrity
 
 # dotenv environment variables file
-.env
+# 注:.env **有意提交**(架构决定:配置打入镜像)。
+# 代价要清楚:PROVIDER_ENC_KEY 是解开所有服务商 API key 的信封密钥,
+# 谁能拉这个仓库 + 拿到任意一份 magp.db,就能还原全部密钥明文。
+# 所以 **magp.db 绝不入库**(见下),且这个仓库必须保持私有。
 .env.test
 
 # parcel-bundler cache (https://parceljs.org/)
@@ -114,3 +117,13 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# ── 本项目 ──────────────────────────────────────────────
+# SQLite 库:内含**加密后的服务商密钥、用户密码哈希、审计流水**。
+# 加密过 ≠ 可以进仓库 —— PROVIDER_ENC_KEY 一旦泄露(或将来被写进别处),库就是明文。
+prisma/*.db
+prisma/*.db-journal
+prisma/*.db-wal
+prisma/*.db-shm
+# Prisma 生成的 client(由 prisma generate 产出,不入库)
+prisma/generated/
