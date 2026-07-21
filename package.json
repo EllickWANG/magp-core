@@ -2,6 +2,8 @@
   "name": "@magp/core",
   "version": "0.0.0",
   "private": true,
+  "//packageManager": "钉住 pnpm 版本 —— corepack 默认拉最新(pnpm 11 要 Node 22+),而基础镜像是 Node 20,不钉会 ERR_UNKNOWN_BUILTIN_MODULE。",
+  "packageManager": "pnpm@10.15.0",
   "type": "module",
   "description": "Magp 全新后端(Midway v4 单进程):业务(app/cms)+ agent(common/agent),模块+接口+DI 解耦。",
   "engines": {

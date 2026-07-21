@@ -7,15 +7,25 @@
 #  2. **库是外部 PostgreSQL**,容器本身无状态 —— 不需要挂卷,横向扩也不用改。
 #     DATABASE_URL 走 .env(已打入镜像);换环境时用 `-e DATABASE_URL=...` 覆盖即可。
 
+# 基础镜像走阿里云镜像源(直连 Docker Hub 不稳)。注意它是 **Alpine/musl + Node 20**:
+#  - 包管理是 apk 不是 apt-get;创建用户是 adduser 不是 useradd(busybox 没有 shadow);
+#  - Prisma 在 musl 上要额外装 libc6-compat,否则引擎加载失败;
+#  - 本机是 arm64,镜像也是 arm64。要部署到 x86 服务器得加 `--platform linux/amd64` 构建。
+
 # ── 构建阶段 ───────────────────────────────────────────────
-FROM node:22-slim AS builder
+FROM registry.cn-hangzhou.aliyuncs.com/ellicksy/public:docker.m.daocloud.io_library_node_20-alpine AS builder
 WORKDIR /app
 
-# openssl:Prisma 查询引擎要用它探测平台并加载对应二进制,缺了会在 generate 时报错。
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# Alpine(musl)上 Prisma 的额外要求:
+#  - openssl:查询引擎靠它探测平台、选对二进制,缺了 generate 直接报错;
+#  - libc6-compat:Prisma 的引擎是针对 musl 编的没错,但它仍会动态链接若干 glibc 符号,
+#    少了这个包会在运行时抛 "Error loading shared library"。
+RUN apk add --no-cache openssl ca-certificates libc6-compat
 
-RUN corepack enable
+# 先拷 package.json 再 enable:corepack 要读它的 packageManager 字段才知道该用哪个 pnpm。
+# 不钉版本的话 corepack 会拉最新(pnpm 11 需要 Node 22+),在 Node 20 上直接 ERR_UNKNOWN_BUILTIN_MODULE。
+COPY package.json ./
+RUN corepack enable && corepack prepare --activate
 
 # pnpm 10+ 默认拦截依赖的构建脚本(防供应链攻击),遇到 Prisma 这种要 postinstall 的包
 # 就直接 ERR_PNPM_IGNORED_BUILDS 退出 —— 而且 `pnpm exec` / `pnpm prune` 都会重跑这道检查。
@@ -25,7 +35,7 @@ RUN corepack enable
 ENV PNPM_CONFIG_STRICT_DEP_BUILDS=false
 
 # 先只拷清单 —— 依赖没变时这层命中缓存,改业务代码不必重装。
-COPY package.json pnpm-lock.yaml ./
+COPY pnpm-lock.yaml ./
 
 RUN pnpm install --frozen-lockfile
 
@@ -40,11 +50,10 @@ RUN pnpm exec prisma generate \
 RUN pnpm prune --prod
 
 # ── 运行阶段 ───────────────────────────────────────────────
-FROM node:22-slim AS runtime
+FROM registry.cn-hangzhou.aliyuncs.com/ellicksy/public:docker.m.daocloud.io_library_node_20-alpine AS runtime
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache openssl ca-certificates libc6-compat
 
 ENV NODE_ENV=production \
     PORT=7001
@@ -63,8 +72,8 @@ RUN npm i -g prisma@6 --no-audit --no-fund
 
 EXPOSE 7001
 
-# 非 root 运行;/data 要给它写权限,否则 SQLite 开不了库。
-RUN useradd -m -u 10001 magp && chown -R magp:magp /app
+# 非 root 运行。Alpine 的 busybox 只有 adduser(没有 shadow 的 useradd)。
+RUN adduser -D -u 10001 magp && chown -R magp:magp /app
 USER magp
 
 # `db push` 是幂等的:表已存在就什么都不做,新增字段会补上 —— 适合这种无 migration 目录的项目。
