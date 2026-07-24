@@ -72,7 +72,9 @@ export class AuthController {
 
   @Post('/refresh')
   async refresh(@Body('refreshToken') refreshToken: string) {
-    return this.auth.refresh(refreshToken)
+    // 返回**完整会话**(user + 新 access + 同一个 refresh + expiresIn),与 login 形状一致 ——
+    // 客户端据此更新 access 到期时刻,不会因缺 expiresIn 而把到期算成 NaN、也不会把本地 refresh 抹掉。
+    return this.session(await this.auth.refresh(refreshToken))
   }
 
   @Post('/logout')

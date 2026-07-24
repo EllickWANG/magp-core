@@ -20,6 +20,7 @@ export { AgentSessionManager } from './business/common/agent/session/session.man
 export { ProviderService } from './business/app/provider/provider.service.js'
 export { ModelConfigProvider } from './business/app/provider/model-config.provider.js'
 export { CapabilityService } from './business/app/capability/capability.service.js'
+export { CapabilityController } from './business/app/capability/capability.controller.js'
 export { ToolPolicyPermission } from './business/app/toolpolicy/permission.provider.js'
 export { UsageService } from './business/app/usage/usage.service.js'
 export { AuthService } from './business/app/auth/auth.service.js'

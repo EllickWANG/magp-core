@@ -24,6 +24,12 @@ export interface GroundingResult {
 export interface ICapability {
   describeImage(input: { url: string; prompt?: string }, meta: TurnMeta, signal: AbortSignal): Promise<unknown>
   generateImage(input: { prompt: string }, meta: TurnMeta, signal: AbortSignal): Promise<unknown>
+  /** 生视频(异步:提交→轮询→下载)。用指派给「视频」能力的服务商;协议失败返回 {ok:false} 不抛。 */
+  generateVideo(
+    input: { prompt: string },
+    meta: TurnMeta,
+    signal: AbortSignal,
+  ): Promise<{ ok: true; b64: string; mimeType: string } | { ok: false; error: string }>
   /**
    * **视觉定位(grounding)**:在图里找出目标元素的精确 bbox。
    * 和 describeImage 的本质区别:那个要的是"描述"(坐标只是散文里的约数,必然不准),

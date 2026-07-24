@@ -66,11 +66,17 @@ export class AuthService implements IAuthService {
     return this.issue(user.id, origin)
   }
 
-  async refresh(refreshToken: string): Promise<{ accessToken: string }> {
+  async refresh(refreshToken: string): Promise<AuthTokens> {
     const row = await this.db.client.authToken.findUnique({ where: { tokenHash: sha256(refreshToken) } })
     if (!row || row.revokedAt || row.expiresAt.getTime() < Date.now()) throw new Error('refresh 无效')
-    await this.db.client.authToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } })
-    return { accessToken: this.signAccess(row.userId) }
+    // 滑动续期:每次刷新把 refresh 的到期整体往后推 —— 只要用户在用,会话就永不过期,不会用着用着被踢回登录页。
+    // **不轮换 token**:轮换会在弱网下遇到"刷新响应丢失 → 客户端仍持旧 token → 旧 token 已作废 → 被登出"的
+    // 经典问题;access 仍短命(15m)保证安全,长命的 refresh 不轮换、只滑动。
+    await this.db.client.authToken.update({
+      where: { id: row.id },
+      data: { lastUsedAt: new Date(), expiresAt: new Date(Date.now() + REFRESH_TTL_MS) },
+    })
+    return { accessToken: this.signAccess(row.userId), refreshToken, userId: row.userId }
   }
 
   verifyAccess(accessToken: string): { userId: string } | null {

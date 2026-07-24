@@ -10,6 +10,7 @@ import {
 import type { TurnMeta } from '../../common/agent/domain/index.js'
 import { PROVIDER_REGISTRY, type IProviderRegistry, type ResolvedProvider } from '../provider/provider.contract.js'
 import { USAGE_SERVICE, type IUsageService } from '../usage/usage.contract.js'
+import { generateVideo as generateVideoProtocol, type GenerateVideoResult } from './protocol/video.js'
 
 /**
  * 业务实现 agent 的 CAPABILITY:看图/生图 —— 解析对应 provider,in-process 调 OpenAI 兼容接口 + 记账。
@@ -124,6 +125,27 @@ export class CapabilityService implements ICapability {
       totalTokens: 0,
     })
     return { url: res.data?.[0]?.url ?? '', b64: res.data?.[0]?.b64_json ?? null }
+  }
+
+  /**
+   * 生视频 —— 用指派给「视频」能力的服务商(异步:提交→轮询→下载,协议在 protocol/video)。
+   * 上游不回 token 用量 → 记一条 0-token 的调用行(生成次数本身就是账)。只在成功时记账。
+   */
+  async generateVideo(input: { prompt: string }, meta: TurnMeta, signal: AbortSignal): Promise<GenerateVideoResult> {
+    const p = await this.providers.resolve('video')
+    if (!p) return { ok: false, error: '未指派视频服务商 —— 去后台把某个服务商指派给「视频」能力。' }
+    const r = await generateVideoProtocol(p, input.prompt, signal)
+    if (r.ok) {
+      await this.usage.record({
+        userId: meta.userId,
+        requestId: randomUUID(),
+        provider: p.code,
+        model: p.model,
+        capability: 'video',
+        totalTokens: 0,
+      })
+    }
+    return r
   }
 }
 
