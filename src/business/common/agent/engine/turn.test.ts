@@ -147,6 +147,43 @@ describe('runTurn', () => {
     expect(base.messages.length).toBe(1)
   })
 
+  it('取消发生在多工具串行中途:每个 tool_use 都配对 tool_result(不变式不破)', async () => {
+    const ac = new AbortController()
+    // 第一个工具执行时就 abort,逼出"取消发生在第 2 个工具之前"的路径。
+    const abortingTool: ITool<{ msg: string }> = {
+      name: 'abort',
+      description: 'a',
+      inputSchema: z.object({ msg: z.string() }),
+      isEnabled: () => true,
+      async *execute(input) {
+        ac.abort()
+        yield { t: 'result', result: input.msg }
+      },
+    }
+    const base = {
+      ...ctx(
+        fakeModel([[
+          { type: 'tool_call', call: { id: 'c1', name: 'abort', input: { msg: 'x' } } },
+          { type: 'tool_call', call: { id: 'c2', name: 'echo', input: { msg: 'y' } } },
+        ]]),
+        allow,
+        [abortingTool as ITool, echoTool as ITool],
+      ),
+      signal: ac.signal,
+    }
+    const events = await collect(runTurn(base))
+    // 两个 tool_use 都必须有 tool_result(c1 真跑、c2 取消占位)
+    const ids = events
+      .filter((e): e is Extract<AgentEvent, { t: 'tool_result' }> => e.t === 'tool_result')
+      .map((e) => e.callId)
+      .sort()
+    expect(ids).toEqual(['c1', 'c2'])
+    // messages 里 tool_use 数 == tool 消息数(配对不变式,否则再发给 Anthropic 会 400)
+    const toolUses = base.messages.flatMap((m) => m.content.filter((p) => p.type === 'tool_use')).length
+    const toolMsgs = base.messages.filter((m) => m.role === 'tool').length
+    expect(toolUses).toBe(toolMsgs)
+  })
+
   it('取消:已 abort 立即 turn_end(aborted)', async () => {
     const base = ctx(fakeModel([]), allow, [])
     const ac = new AbortController()

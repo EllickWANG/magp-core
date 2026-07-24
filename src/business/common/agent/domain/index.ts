@@ -42,6 +42,11 @@ export type TurnEndReason = 'stop' | 'max_steps' | 'aborted' | 'error'
 
 /** 内核对外唯一货币:AgentEvent。 */
 export type AgentEvent =
+  /**
+   * 用户消息入账 —— **仅用于持久化重建历史**,不下发客户端(客户端本来就有自己发的这条)。
+   * 之前只有 assistant/tool 事件落库、用户消息只在内存里,导致 load() 无法重建完整对话。
+   */
+  | { readonly t: 'user_message'; readonly message: Message }
   | { readonly t: 'turn_start'; readonly turnId: string }
   | { readonly t: 'assistant_delta'; readonly turnId: string; readonly delta: string }
   | { readonly t: 'assistant_message'; readonly turnId: string; readonly message: Message }

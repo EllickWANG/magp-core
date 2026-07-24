@@ -26,10 +26,18 @@ export class WsHub {
     this.hubs.set(sessionId, set)
   }
 
-  unregister(sessionId: string, socket: WebSocket): void {
+  /** 注销一个 socket,返回该 session **剩余**的连接数(供上层判断是否还有别的设备/标签在连)。 */
+  unregister(sessionId: string, socket: WebSocket): number {
     const set = this.hubs.get(sessionId)
     set?.delete(socket)
-    if (set && set.size === 0) this.hubs.delete(sessionId)
+    const remaining = set?.size ?? 0
+    if (set && remaining === 0) this.hubs.delete(sessionId)
+    return remaining
+  }
+
+  /** 该 session 当前有没有活的客户端连着(浏览器控制端点用它判断能不能下指令)。 */
+  hasClients(sessionId: string): boolean {
+    return (this.hubs.get(sessionId)?.size ?? 0) > 0
   }
 
   broadcast(sessionId: string, payload: string): number {

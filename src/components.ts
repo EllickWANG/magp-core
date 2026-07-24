@@ -34,6 +34,7 @@ export { WsClientChannel } from './business/app/session/ws-channel.provider.js'
 export { AgentWsController } from './business/app/session/ws.controller.js'
 export { SessionService } from './business/app/session/session.service.js'
 export { SessionController } from './business/app/session/session.controller.js'
+export { BrowserControlController } from './business/app/session/browser-control.controller.js'
 
 // 业务·cms 域
 export { CmsController } from './business/cms/cms.controller.js'

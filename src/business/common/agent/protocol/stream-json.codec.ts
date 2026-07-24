@@ -31,6 +31,8 @@ export class StreamJsonCodec implements IClientProtocol {
         return { type: 'result', reason: e.reason }
       case 'error':
         return { type: 'error', code: e.code, message: e.message }
+      case 'user_message':
+        return null // 仅持久化重建用,不回显给客户端(它本来就有自己发的这条)
       default:
         return null // turn_start / tool_progress 默认不下发
     }

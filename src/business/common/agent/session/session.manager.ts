@@ -71,6 +71,9 @@ export class AgentSessionManager {
   private readonly cfg!: { system: string; maxSteps: number }
 
   private readonly live = new Map<string, SessionRuntime>()
+  /** 最后一个 socket 断开后的宽限计时器:期内重连则取消,避免抖动/切页面就杀掉正在跑的这一轮。 */
+  private readonly graceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private static readonly GRACE_MS = 30_000
 
   /** session-socket 的 {kind:'client'} 落这里(已验票 → userId)。 */
   async onClientMessage(sessionId: string, userId: string, wire: WireFrame): Promise<void> {
@@ -79,7 +82,36 @@ export class AgentSessionManager {
   }
 
   interrupt(sessionId: string): void {
+    this.clearGrace(sessionId)
     this.live.get(sessionId)?.stop()
+  }
+
+  /**
+   * 某 session 的**最后一个** socket 断开 —— 不立刻中断,先宽限 GRACE_MS。
+   * 期内有 socket 重连(socketReconnected)则取消;超时才真正中断这一轮。
+   * 断连≠取消:配合 transcript.load 重建,历史在宽限内保留在内存、无需重读 PG。
+   */
+  socketGone(sessionId: string): void {
+    this.clearGrace(sessionId)
+    const timer = setTimeout(() => {
+      this.graceTimers.delete(sessionId)
+      this.live.get(sessionId)?.stop()
+    }, AgentSessionManager.GRACE_MS)
+    timer.unref?.() // 别因为这个后台计时器挡住进程退出
+    this.graceTimers.set(sessionId, timer)
+  }
+
+  /** 有 socket(重新)连上:取消待定的宽限中断,保住正在跑的这一轮。 */
+  socketReconnected(sessionId: string): void {
+    this.clearGrace(sessionId)
+  }
+
+  private clearGrace(sessionId: string): void {
+    const t = this.graceTimers.get(sessionId)
+    if (t) {
+      clearTimeout(t)
+      this.graceTimers.delete(sessionId)
+    }
   }
 
   private async start(sessionId: string, userId: string): Promise<SessionRuntime> {

@@ -175,7 +175,12 @@ function toAnthropicMessages(messages: readonly Message[]): unknown[] {
   const out: { role: 'user' | 'assistant'; content: unknown[] }[] = []
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', content: [{ type: 'text', text: textOf(m.content) }] })
+      // 并进上一条 user(如果有)—— Anthropic 要求 user/assistant 交替,连续两条 user 会 400。
+      // 重建历史时"用户发问→这轮被取消(无 assistant 输出)→用户再发问"就会产生连续 user。
+      const block = { type: 'text', text: textOf(m.content) }
+      const last = out[out.length - 1]
+      if (last?.role === 'user') last.content.push(block)
+      else out.push({ role: 'user', content: [block] })
       continue
     }
     if (m.role === 'assistant') {

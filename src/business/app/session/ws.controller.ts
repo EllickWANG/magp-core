@@ -43,6 +43,8 @@ export class AgentWsController {
     this.sessionId = consumed.sessionId
     this.userId = consumed.userId
     this.hub.register(this.sessionId, this.socket())
+    // 重连:取消上一个 socket 断开时挂起的宽限中断,保住正在跑的这一轮。
+    this.manager.socketReconnected(this.sessionId)
     // 握手:消息监听在 onConnection 之后才绑定,客户端须等到 ready 再发首条消息,避免竞态丢消息。
     this.socket().send(JSON.stringify({ type: 'ready', sessionId: this.sessionId }))
   }
@@ -77,7 +79,9 @@ export class AgentWsController {
   @OnWSDisConnection()
   async onDisconnect() {
     if (!this.sessionId) return
-    this.hub.unregister(this.sessionId, this.socket())
-    this.manager.interrupt(this.sessionId)
+    const remaining = this.hub.unregister(this.sessionId, this.socket())
+    // 还有别的设备/标签连着 → 别动这一轮(修"一台断连殃及全体")。
+    // 最后一个也走了 → 进宽限,不立刻中断;期内重连就保住,超时才真正结束这一轮。
+    if (remaining === 0) this.manager.socketGone(this.sessionId)
   }
 }

@@ -78,12 +78,20 @@ export async function* runTurn(ctx: RunCtx): AsyncGenerator<AgentEvent> {
       return
     }
 
-    for (const call of calls) {
+    for (let i = 0; i < calls.length; i++) {
       if (ctx.signal.aborted) {
+        // 取消发生在多工具串行中途:assistant 消息已带全部 N 个 tool_use,但只跑了前 i 个。
+        // 给**尚未执行**的 call 补 isError 占位 tool_result —— 维持"每个 tool_use 必配对 tool_result"
+        // 的不变式。否则这段历史被持久化/重建后再发给 Anthropic 会 400(tool_use 无配对 tool_result)。
+        for (let j = i; j < calls.length; j++) {
+          const c = calls[j]!
+          ctx.messages.push(toolResultMessage(c.id, '（已取消,未执行）', true))
+          yield { t: 'tool_result', turnId, callId: c.id, result: '（已取消,未执行）', isError: true }
+        }
         yield { t: 'turn_end', turnId, reason: 'aborted' }
         return
       }
-      yield* invokeTool(ctx, turnId, call)
+      yield* invokeTool(ctx, turnId, calls[i]!)
     }
   }
 

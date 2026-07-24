@@ -1,12 +1,14 @@
 import { Provide, Scope, ScopeEnum } from '@midwayjs/core'
 import type { AgentEvent, Message } from '../domain/index.js'
+import { toolResultMessage } from '../domain/index.js'
 import { TRANSCRIPT_STORE, type ITranscriptStore } from './transcript.contract.js'
-import { appendSessionEvents, maxSessionEventSeq } from '../../session-events.js'
+import { appendSessionEvents, listSessionEvents, maxSessionEventSeq } from '../../session-events.js'
 
 /**
  * ITranscriptStore 的实现:内脏就是通用的 session-events(PG)。
- * TODO: load 时从 session_events 物化成 Message[](读时重建);
- *       AgentEvent→line 走 IClientProtocol.toTranscriptLine(与 wire 同源)。
+ * 落库:每个 AgentEvent 一行(JSON)。重建:只从**结构化事件**物化 Message[] ——
+ * user_message / assistant_message 直接取其 message;tool_result 还原成 tool 消息。
+ * assistant_delta(逐字)只用于实时下发,不参与重建(assistant_message 已含整条正文,避免重复)。
  */
 @Provide(TRANSCRIPT_STORE)
 @Scope(ScopeEnum.Singleton)
@@ -17,8 +19,23 @@ export class PrismaTranscriptStore implements ITranscriptStore {
     await appendSessionEvents(sessionId, lines)
   }
 
-  async load(_sessionId: string, _signal: AbortSignal): Promise<readonly Message[]> {
-    // TODO: const lines = await listSessionEvents(sessionId); return rebuildMessages(lines)
-    return []
+  async load(sessionId: string, _signal: AbortSignal): Promise<readonly Message[]> {
+    const rows = await listSessionEvents(sessionId)
+    const messages: Message[] = []
+    for (const { line } of rows) {
+      let e: AgentEvent
+      try {
+        e = JSON.parse(line) as AgentEvent
+      } catch {
+        continue // 半截/脏行,跳过而非崩掉整段重建
+      }
+      if (e.t === 'user_message' || e.t === 'assistant_message') {
+        messages.push(e.message)
+      } else if (e.t === 'tool_result') {
+        // assistant 的 tool_use(在 assistant_message 里)之后紧跟 tool 消息,维持 Anthropic 的配对结构。
+        messages.push(toolResultMessage(e.callId, e.result, e.isError))
+      }
+    }
+    return messages
   }
 }
