@@ -52,6 +52,10 @@ export class OpenAIResponsesProtocol implements IChatProtocol {
       if (t === 'response.output_text.delta') {
         const d = ev.delta
         if (typeof d === 'string' && d) yield { type: 'text', delta: d }
+      } else if (t === 'response.reasoning_summary_text.delta' || t === 'response.reasoning_text.delta') {
+        // 推理型模型的思考摘要 —— 走独立 thinking 通道,不并进正文。
+        const d = ev.delta
+        if (typeof d === 'string' && d) yield { type: 'thinking', delta: d }
       } else if (t === 'response.output_item.added') {
         const item = ev.item as { type?: string; id?: string; call_id?: string; name?: string } | undefined
         if (item?.type === 'function_call') {

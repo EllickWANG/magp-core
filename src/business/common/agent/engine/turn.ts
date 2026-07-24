@@ -26,6 +26,7 @@ export async function* runTurn(ctx: RunCtx): AsyncGenerator<AgentEvent> {
 
     const specs = ctx.tools.enabledSpecs(ctx.meta)
     let text = ''
+    let thinking = ''
     const calls: ToolCall[] = []
 
     try {
@@ -39,6 +40,9 @@ export async function* runTurn(ctx: RunCtx): AsyncGenerator<AgentEvent> {
         if (d.type === 'text') {
           text += d.delta
           yield { t: 'assistant_delta', turnId, delta: d.delta }
+        } else if (d.type === 'thinking') {
+          // 思考/推理内容:只累积,**绝不并进 text、绝不下发给客户端**——否则思维链会被当成回复。
+          thinking += d.delta
         } else if (d.type === 'tool_call') {
           calls.push(d.call)
         }
@@ -50,6 +54,18 @@ export async function* runTurn(ctx: RunCtx): AsyncGenerator<AgentEvent> {
       }
       yield { t: 'error', turnId, code: 'model_stream', message: errMsg(err) }
       yield { t: 'turn_end', turnId, reason: 'error' }
+      return
+    }
+
+    // 【空产出守卫】这一轮既没说话也没调工具(常见于模型只吐了 reasoning、正文为空)。
+    // 绝不能落一条空 assistant 消息(那会污染模型历史、并让客户端显示一条空气泡/"发消息没反应")。
+    // 给用户一句兜底(不写进模型历史,保持上下文干净),然后结束这一轮。
+    if (text.trim() === '' && calls.length === 0) {
+      const fallback = thinking.trim()
+        ? '（我想了一下但没有给出结论,请再说一次或换个说法。）'
+        : '（这一轮没有生成有效回复,请再说一次或换个说法。）'
+      yield { t: 'assistant_delta', turnId, delta: fallback }
+      yield { t: 'turn_end', turnId, reason: 'stop' }
       return
     }
 

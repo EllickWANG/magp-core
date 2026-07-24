@@ -22,7 +22,11 @@ function fakeModel(script: ModelDelta[][]): IModelProvider {
 const allow: IPermission = { check: async () => ({ allow: true }) }
 const deny: IPermission = { check: async () => ({ allow: false, reason: 'blocked' }) }
 const channel: IClientChannel = { dispatch: async () => ({ ok: true }) }
-const capability: ICapability = { describeImage: async () => ({}), generateImage: async () => ({}) }
+const capability: ICapability = {
+  describeImage: async () => ({}),
+  generateImage: async () => ({}),
+  generateVideo: async () => ({ ok: false as const, error: 'no video provider' }),
+}
 
 const echoTool: ITool<{ msg: string }> = {
   name: 'echo',
@@ -105,6 +109,42 @@ describe('runTurn', () => {
     )
     const res = events.find((e) => e.t === 'tool_result')
     expect(res?.t === 'tool_result' && res.isError).toBe(true)
+  })
+
+  it('thinking 不并进正文、不下发给客户端', async () => {
+    const events = await collect(
+      runTurn(
+        ctx(
+          fakeModel([[
+            { type: 'thinking', delta: '我在想该怎么答' },
+            { type: 'text', delta: '你好' },
+            { type: 'stop', reason: 'stop' },
+          ]]),
+          allow,
+          [],
+        ),
+      ),
+    )
+    // 客户端只应看到正文 delta,思维链一个字都不能出现在 assistant_delta 里
+    const deltas = events
+      .filter((e): e is Extract<AgentEvent, { t: 'assistant_delta' }> => e.t === 'assistant_delta')
+      .map((e) => e.delta)
+      .join('')
+    expect(deltas).toBe('你好')
+  })
+
+  it('空产出守卫:只有 thinking 无正文无工具 → 不落空消息,给兜底 delta,不污染历史', async () => {
+    const base = ctx(fakeModel([[{ type: 'thinking', delta: '想了但没结论' }, { type: 'stop', reason: 'stop' }]]), allow, [])
+    const events = await collect(runTurn(base))
+    // 不落空的 assistant_message
+    expect(events.some((e) => e.t === 'assistant_message')).toBe(false)
+    // 给用户一句兜底(有 assistant_delta),而不是彻底沉默
+    expect(events.some((e) => e.t === 'assistant_delta')).toBe(true)
+    // 正常收尾
+    const end = events.at(-1)
+    expect(end?.t === 'turn_end' && end.reason).toBe('stop')
+    // 模型历史不被空/兜底消息污染(仍只有最初那条 user 消息)
+    expect(base.messages.length).toBe(1)
   })
 
   it('取消:已 abort 立即 turn_end(aborted)', async () => {

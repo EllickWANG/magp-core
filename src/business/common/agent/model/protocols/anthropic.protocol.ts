@@ -61,9 +61,13 @@ export class AnthropicProtocol implements IChatProtocol {
           break
         }
         case 'content_block_delta': {
-          const d = ev.delta as { type?: string; text?: string; partial_json?: string } | undefined
+          const d = ev.delta as { type?: string; text?: string; thinking?: string; partial_json?: string } | undefined
           if (d?.type === 'text_delta' && d.text) {
             yield { type: 'text', delta: d.text }
+          } else if (d?.type === 'thinking_delta' && d.thinking) {
+            // 扩展思考的思维链:走独立 thinking 通道,别丢(旧实现丢弃它 → thinking-only 轮次正文恒空)、
+            // 更不能当正文。仅在模型开了 thinking 时出现。
+            yield { type: 'thinking', delta: d.thinking }
           } else if (d?.type === 'input_json_delta' && d.partial_json) {
             const cur = blocks.get(ev.index as number)
             if (cur) cur.json += d.partial_json

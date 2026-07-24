@@ -49,9 +49,11 @@ export class OpenAIChatProtocol implements IChatProtocol {
     for await (const chunk of stream) {
       const choice = chunk.choices[0]
       if (!choice) continue
-      const d = choice.delta as (typeof choice.delta) & { reasoning_content?: string }
-      // deepseek 的思维链:当普通文本流出,别让它凭空消失。
-      if (d?.reasoning_content) yield { type: 'text', delta: d.reasoning_content }
+      // deepseek 的 reasoning_content / 部分中转把 OpenAI 推理模型的 reasoning 也塞这个字段。
+      // 走**独立的 thinking 通道**,不能当正文——否则整段思维链会被当成 agent 的回复发给用户。
+      const d = choice.delta as (typeof choice.delta) & { reasoning_content?: string; reasoning?: string }
+      const reasoning = d?.reasoning_content ?? d?.reasoning
+      if (reasoning) yield { type: 'thinking', delta: reasoning }
       if (d?.content) yield { type: 'text', delta: d.content }
       for (const tc of d?.tool_calls ?? []) {
         const cur = acc.get(tc.index) ?? { id: '', name: '', args: '' }
