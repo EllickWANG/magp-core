@@ -5,7 +5,7 @@
 #  1. **Prisma 客户端生成到 `prisma/generated/client`**(schema 里自定义了 output),不在 node_modules。
 #     所以必须在镜像里跑 `prisma generate`,并把这份产物带进运行阶段 —— 只装依赖是起不来的。
 #  2. **库是外部 PostgreSQL**,容器本身无状态 —— 不需要挂卷,横向扩也不用改。
-#     DATABASE_URL 走 .env(已打入镜像);换环境时用 `-e DATABASE_URL=...` 覆盖即可。
+#     DATABASE_URL 等配置在启动时通过 `--env-file` / `-e` 注入,不打入镜像。
 
 # 基础镜像走阿里云镜像源(直连 Docker Hub 不稳)。注意它是 **Alpine/musl + Node 20**:
 #  - 包管理是 apk 不是 apt-get;创建用户是 adduser 不是 useradd(busybox 没有 shadow);
@@ -63,9 +63,7 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/bootstrap.js ./bootstrap.js
 COPY --from=builder /app/package.json ./package.json
-# 配置打入镜像(架构决定)。要覆盖就在 `docker run` 时挂一份新的到 /app/.env,
-# 或用 `--env-file` / `-e` 传 —— 下面 entrypoint 里 --env-file-if-exists 不会覆盖已存在的环境变量。
-COPY --from=builder /app/.env ./.env
+# 运行配置通过 docker compose 的 env_file 或 docker run --env-file 注入。
 
 # 运行时用的 prisma CLI(builder 里 prune 掉了 devDeps,这里单独装一份精简的)
 RUN npm i -g prisma@6 --no-audit --no-fund

@@ -11,8 +11,10 @@ export async function seedDatabase(): Promise<void> {
 
   const email = process.env.ADMIN_EMAIL ?? 'admin@magp.local'
   if (!(await db.user.findUnique({ where: { email } }))) {
+    const password = process.env.ADMIN_PASSWORD
+    if (!password) throw new Error('ADMIN_PASSWORD 未配置 —— 首次创建管理员时必须设置')
     await db.user.create({
-      data: { email, name: 'Admin', role: 'admin', password: await hashPassword(process.env.ADMIN_PASSWORD ?? 'REMOVED_SECRET') },
+      data: { email, name: 'Admin', role: 'admin', password: await hashPassword(password) },
     })
   }
 

@@ -35,13 +35,21 @@ src/
 
 ## 命令
 
+首次运行先复制配置示例,填写数据库连接和独立的管理员密码。
+`AUTH_SECRET` 与 `PROVIDER_ENC_KEY` 分别使用 `openssl rand -base64 32` 生成。
+`.env` 只保存在本地或部署环境,不提交到 Git,也不打入 Docker 镜像。
+
 ```bash
+cp .env.example .env    # 填写配置后再启动
 pnpm install
 pnpm test               # 引擎纯逻辑单测(无网络/无 DB/无 Midway)
 pnpm typecheck
 pnpm lint:boundaries    # 文件夹 + 接口 边界红线
-pnpm dev                # 起 Midway(需填 LLM_API_KEY 等 env)
+pnpm dev                # 起 Midway;模型 provider 通过 CMS 配置
 ```
+
+Docker 部署使用 `docker compose up -d --build`,Compose 会在启动时加载本地 `.env`。
+直接运行镜像时使用 `docker run --env-file .env -p 7001:7001 magp-core:latest`。
 
 ## 待办(填空点)
 

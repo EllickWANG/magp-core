@@ -12,9 +12,10 @@ services:
     restart: unless-stopped
     ports:
       - '7001:7001'
+    env_file:
+      - .env
     environment:
-      # 这几个也写在镜像内的 .env 里;在这里给一份是为了**能就地覆盖**
-      # (比如临时换端口、或部署到另一套环境时换密钥),不用重新构建镜像。
+      # 运行时注入配置;这里的值覆盖 env_file 中的同名变量。
       NODE_ENV: production
       PORT: '7001'
     healthcheck:
